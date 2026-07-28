@@ -121,7 +121,7 @@ paths:
         automatically when a game is won, detects match completion, updates
         the serve indicator, and — on match completion — persists the match
         to history and (best-effort, non-blocking) ingests a summary
-        document into OpenRAG.
+        document into the Astra DB-backed RAG index.
       x-req-ids: [REQ-005, REQ-007, REQ-008, REQ-009, REQ-011, REQ-012, REQ-019]
       requestBody:
         required: true
@@ -263,7 +263,7 @@ paths:
         standalone estimate only — it never reads or writes match/point
         data, and is never treated as ground truth by the scoring engine or
         summary endpoints. When the video is analyzable, a summary of the
-        result is also added to the OpenRAG knowledge index, best-effort
+        result is also added to the Astra DB-backed RAG knowledge index, best-effort
         (REQ-029) — this indexing side effect never affects the response.
       x-req-ids: [REQ-025, REQ-026, REQ-027, REQ-028, REQ-029]
       requestBody:

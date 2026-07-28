@@ -1,6 +1,6 @@
 # Table Tennis Match Stats App — Design
 
-Companion to `requirements.md`. Covers the data model, the (minimal) OpenRAG integration and its
+Companion to `requirements.md`. Covers the data model, the (minimal) RAG indexing integration and its
 knowledge filters, the REQ-to-endpoint traceability, and the technical requirements for the frontend
 and backend. Stack decisions below were confirmed with the project owner rather than assumed:
 
@@ -9,24 +9,30 @@ and backend. Stack decisions below were confirmed with the project owner rather 
 | Backend | Python + FastAPI |
 | Frontend | React SPA |
 | Local structured-data storage | SQLite (single file) |
-| OpenRAG's role | Minimal wiring only — ingest completed-match summaries for future use; no chat/search feature built yet |
+| RAG index backend | DataStax Astra DB (hosted Data API) — minimal wiring only: ingest completed-match and video-analysis summaries for future use; no chat/search feature built yet |
 
 ## Architecture Overview
 
 ```
 React SPA  ──REST──▶  FastAPI backend  ──reads/writes──▶  SQLite (match/game/point data)
                               │
-                              └──best-effort, async──▶  OpenRAG (openrag-sdk, Python)
+                              └──best-effort, async──▶  Astra DB (astrapy, Python)
                                                           document ingestion only
 ```
 
-- The SPA never talks to OpenRAG directly — all traffic goes through the backend's own REST API
-  (`openapi.yaml`), keeping any future `OPENRAG_API_KEY` server-side only.
-- SQLite is the source of truth for everything the API serves (scores, history, stats). OpenRAG is a
-  side-channel: a copy of each completed match's summary is ingested as a document so a later feature
-  (semantic search or chat over match history) can be added without re-processing old matches. If OpenRAG
-  is unreachable, match completion and saving to history (REQ-019) must still succeed — ingestion failures
-  are logged and swallowed, never surfaced to the user or allowed to block the request.
+- The SPA never talks to Astra DB directly — all traffic goes through the backend's own REST API
+  (`openapi.yaml`), keeping `ASTRA_DB_APPLICATION_TOKEN` server-side only.
+- SQLite is the source of truth for everything the API serves (scores, history, stats). Astra DB is a
+  side-channel: a copy of each completed match's summary (and each successful video analysis, REQ-029) is
+  ingested as a document into a collection so a later feature (semantic search or chat over match history)
+  can be added without re-processing old matches. If Astra DB is unreachable or unconfigured, match
+  completion and saving to history (REQ-019) must still succeed — ingestion failures are logged and
+  swallowed, never surfaced to the user or allowed to block the request.
+- **Note on provider history**: this integration originally targeted a self-hosted OpenRAG instance
+  (`openrag-sdk`). That was swapped for Astra DB's hosted Data API at the project owner's explicit
+  request, since a local OpenRAG install requires Docker (to run OpenSearch/Langflow), and the
+  deployment environment this was built in could not pull container images. Astra DB needs no local
+  service at all — just an API endpoint and an application token.
 
 ## Data Model (SQLite)
 
@@ -83,71 +89,64 @@ React SPA  ──REST──▶  FastAPI backend  ──reads/writes──▶  SQ
   `abandoned` and keeping it queryable — REQ-023's acceptance criterion is that no record appears anywhere
   in history, so a soft status alone would not satisfy it.
 
-## OpenRAG Integration (Minimal)
+## RAG Indexing Integration (Astra DB, Minimal)
 
-Per the confirmed scope, OpenRAG is wired up only far enough to make a later stats-chat/search feature
-possible — no new user-facing behavior ships yet, and there is no OpenRAG-backed endpoint in
-`openapi.yaml`. Everything below happens as a side effect of match completion (REQ-019), following the
-`openrag_sdk` skill's integration and error-handling patterns.
+Per the confirmed scope, the RAG index is wired up only far enough to make a later stats-chat/search
+feature possible — no new user-facing behavior ships yet, and there is no RAG-backed query endpoint in
+`openapi.yaml`. Everything below happens as a side effect of match completion (REQ-019) and, separately,
+of a successful video analysis (REQ-029).
 
 ### What gets ingested
 When a match transitions to `status = completed`, the backend builds a plain-text summary (players, final
 score per game, match result, tag totals — the same data returned by `GET /matches/{id}/summary`) and
-ingests it as a document:
+inserts it as a document into a single Astra DB collection (`rag_index`):
 
 ```python
-from openrag_sdk import OpenRAGClient, OpenRAGError
+from astrapy import DataAPIClient
 
 async def ingest_match_summary(match_id: int, summary_text: str) -> None:
     try:
-        async with OpenRAGClient() as client:  # reads OPENRAG_URL / OPENRAG_API_KEY from env
-            await client.documents.ingest(
-                file=io.BytesIO(summary_text.encode("utf-8")),
-                filename=f"match-{match_id}.txt",
-            )
-    except OpenRAGError:
-        log.warning("OpenRAG ingestion failed for match %s; continuing without it", match_id)
+        client = DataAPIClient(token=settings.astra_db_application_token)
+        database = client.get_async_database(settings.astra_db_api_endpoint)
+        collection = database.get_collection("rag_index")
+        await collection.insert_one(
+            {"kind": "match", "source_id": str(match_id), "content": summary_text}
+        )
+    except Exception:
+        log.warning("Astra DB ingestion failed for match %s; continuing without it", match_id)
 ```
 
-- Filename convention: `match-{match_id}.txt` — deterministic and unique, so a future feature can look up
-  or re-ingest a specific match's document without a separate ID-mapping table.
+- Document shape: `{"kind": "match", "source_id": "<match_id>", "content": "<summary text>"}` — deterministic
+  and unique per match, so a future feature can look up or re-ingest a specific match's document without a
+  separate ID-mapping table. Video analyses use the same collection with `kind: "video_analysis"`,
+  `source_id` set to a hash of the video URL, and an additional `video_url` field (see REQ-029 below).
 - This call is fire-and-forget relative to the HTTP response: the API request that completes the match
   (`POST /matches/{id}/points`) returns as soon as SQLite is updated; ingestion runs after and its failure
-  is only logged (per the skill's "Fallback handling" guidance), never surfaced as an API error.
-- `OPENRAG_URL` and (if the target OpenRAG instance has auth enabled) `OPENRAG_API_KEY` are read from
-  environment variables, matching the SDK's auto-discovery behavior — no OpenRAG config is hardcoded or
-  exposed to the frontend.
+  is only logged, never surfaced as an API error.
+- `ASTRA_DB_API_ENDPOINT` and `ASTRA_DB_APPLICATION_TOKEN` are read from environment variables — no Astra
+  DB config is hardcoded or exposed to the frontend.
 
 ### Knowledge filters needed
 
 Two filter shapes are specified now so a later feature can adopt them without redesigning the ingestion
-side. Consistent with the SDK's `SearchFilters`/`knowledge_filters` API, both scope by `data_sources`
-(the filenames ingested above) rather than by custom metadata fields, since OpenRAG filters don't support
-arbitrary key/value metadata:
+side. Astra DB's Data API supports filtering a collection's documents by exact field match, so both scope
+by fields already present on the ingested documents rather than needing new metadata:
 
 1. **Per-match filter** — scopes to exactly one match's document.
    ```json
-   {
-     "name": "Match #{match_id}",
-     "description": "Scope to a single match's summary",
-     "queryData": { "filters": { "data_sources": ["match-{match_id}.txt"] } }
-   }
+   { "kind": "match", "source_id": "{match_id}" }
    ```
-2. **Per-player filter** — scopes to every match a given player has appeared in. The backend already
-   knows, from the `matches`/`players` tables, every `match-{id}.txt` filename involving a given
-   `player_id`, so this filter's `data_sources` list can be (re)computed at creation/update time.
+2. **Per-player filter** — scopes to every match a given player has appeared in. This requires adding a
+   `player_ids` array field to the ingested document (not yet built — see below), populated from the
+   `matches`/`players` tables at ingestion time:
    ```json
-   {
-     "name": "Player: {display_name}",
-     "description": "Scope to every match this player has played",
-     "queryData": { "filters": { "data_sources": ["match-12.txt", "match-19.txt", "..."] } }
-   }
+   { "kind": "match", "player_ids": "{player_id}" }
    ```
 
-**Not built in this iteration**: actually calling `client.knowledge_filters.create(...)` /
-`.update(...)`, and any endpoint that calls `client.chat.create()` or `client.search.query()` with these
-filters. That is deliberately out of scope per the "minimal wiring" decision — the filter shapes above are
-the contract a future iteration would implement against.
+**Not built in this iteration**: adding the `player_ids` field above, and any endpoint that actually
+queries the collection (`collection.find(...)`) or feeds results to a chat/search feature. That is
+deliberately out of scope per the "minimal wiring" decision — the filter shapes above are the contract a
+future iteration would implement against.
 
 ## Requirements Traceability
 
@@ -175,7 +174,7 @@ OpenAPI spec):
 | REQ-016 | `GET /matches/{id}/summary` | Longest win streak per player. |
 | REQ-017 | `GET /matches/{id}/summary` | Tag totals per player. |
 | REQ-018 | `GET /matches/{id}/summary` | Closest / most one-sided game. |
-| REQ-019 | `POST /matches/{id}/points` | Side effect: persists the completed match; triggers OpenRAG ingestion. |
+| REQ-019 | `POST /matches/{id}/points` | Side effect: persists the completed match; triggers Astra DB ingestion. |
 | REQ-020 | `GET /matches` | Reverse-chronological history list. |
 | REQ-021 | `GET /matches/{id}/summary` | Reopen a past match's full stats. |
 | REQ-022 | `DELETE /matches/{id}` | Removes a match from history. |
@@ -185,7 +184,7 @@ OpenAPI spec):
 | REQ-026 | `POST /video-analysis` | `video_analyzable: false` path — no fabricated score/players. |
 | REQ-027 | `POST /video-analysis` | Handler never opens a database connection — see AI Video Analysis section. |
 | REQ-028 | `POST /video-analysis` | Returns `503 video_analysis_disabled` when `GEMINI_API_KEY` is unset. |
-| REQ-029 | `POST /video-analysis` (side effect) | Best-effort OpenRAG ingestion of the analysis summary, skipped when `video_analyzable` is false or `OPENRAG_API_KEY` is unset. |
+| REQ-029 | `POST /video-analysis` (side effect) | Best-effort Astra DB ingestion of the analysis summary, skipped when `video_analyzable` is false or Astra DB is not configured. |
 
 ## AI Video Analysis (Post-MVP addendum)
 
@@ -198,10 +197,10 @@ React SPA (Analyze Video page)  ──REST──▶  FastAPI (POST /video-analys
 ```
 
 - **Provider**: Google Gemini (`google-genai`, model `gemini-flash-latest`), not the Claude/Anthropic
-  API used elsewhere in this codebase (`openrag_sdk`). This was an explicit, informed choice by the
-  project owner — this deployment environment had no Anthropic API credentials available, and
-  Gemini's API can take a video URL (including YouTube) directly, with Gemini's own servers fetching
-  it — no local download or frame extraction needed on this app's side.
+  API. This was an explicit, informed choice by the project owner — this deployment environment had no
+  Anthropic API credentials available, and Gemini's API can take a video URL (including YouTube)
+  directly, with Gemini's own servers fetching it — no local download or frame extraction needed on
+  this app's side.
 - **Statelessness**: `app/video_analysis.py`'s `analyze_match_video()` takes a URL, calls Gemini, and
   returns its structured JSON response. It never opens a database connection — this is what makes
   REQ-027 true by construction rather than by convention.
@@ -215,20 +214,18 @@ React SPA (Analyze Video page)  ──REST──▶  FastAPI (POST /video-analys
   this is what REQ-026 depends on, and was verified against a real non-table-tennis video during
   testing (see `todo.md` T18).
 - **RAG indexing (REQ-029)**: on a successful (`video_analyzable: true`) analysis, `app/main.py`
-  reuses the same best-effort OpenRAG ingestion pattern as match completion
-  (`app/openrag_integration.py`'s `ingest_video_analysis_best_effort`) to add a plain-text summary of
-  the report to the OpenRAG knowledge index, under a filename derived from a hash of the video URL.
-  This is additive only — it never reads from or writes to the SQLite match/point tables, so it does
-  not weaken REQ-027. Like match ingestion, failures (including no `OPENRAG_API_KEY` configured) are
-  logged and swallowed, never surfaced to the caller or reflected in the HTTP response.
+  reuses the same best-effort Astra DB ingestion pattern as match completion
+  (`app/rag_integration.py`'s `ingest_video_analysis_best_effort`) to add a plain-text summary of
+  the report to the `rag_index` collection, keyed by a hash of the video URL. This is additive only —
+  it never reads from or writes to the SQLite match/point tables, so it does not weaken REQ-027. Like
+  match ingestion, failures (including no Astra DB configuration) are logged and swallowed, never
+  surfaced to the caller or reflected in the HTTP response.
 
 ## Technical Requirements — Backend
 
-- **Runtime**: Python 3.11+ (any interpreter able to run FastAPI and `openrag-sdk`'s async client); this
-  is independent of the Python 3.13 requirement noted in the separate `openrag_install` skill, which
-  governs the standalone OpenRAG service, not this app.
-- **Framework**: FastAPI + Uvicorn (ASGI), chosen so OpenRAG SDK calls (async-only) can be awaited natively
-  inside request handlers without a sync/async bridge.
+- **Runtime**: Python 3.11+ (any interpreter able to run FastAPI and `astrapy`'s async client).
+- **Framework**: FastAPI + Uvicorn (ASGI), chosen so Astra DB SDK calls (async-only) can be awaited
+  natively inside request handlers without a sync/async bridge.
 - **Validation**: Pydantic models mirroring the `openapi.yaml` schemas; request validation enforces
   REQ-004 (distinct non-empty names, `points_to_win` ∈ {11, 21}, `best_of` ∈ {1, 3, 5}).
 - **Scoring engine**: the deuce/game-win/match-win/serve-rotation rules (REQ-007/008/009/012) live in a
@@ -236,9 +233,10 @@ React SPA (Analyze Video page)  ──REST──▶  FastAPI (POST /video-analys
   directly.
 - **Persistence**: a single SQLite file (path from a `DATABASE_PATH` env var, default e.g.
   `./tabletennis.db`), schema as above, foreign keys enforced (`PRAGMA foreign_keys = ON`).
-- **OpenRAG client**: one `OpenRAGClient` per process (or per-request, since the SDK is a lightweight async
-  context manager), configured from `OPENRAG_URL` / `OPENRAG_API_KEY` env vars; all calls wrapped per the
-  `openrag_sdk` skill's error-handling guidance so `OpenRAGError` never propagates to the HTTP layer.
+- **Astra DB client**: one `DataAPIClient` per ingestion call, configured from `ASTRA_DB_API_ENDPOINT` /
+  `ASTRA_DB_APPLICATION_TOKEN` env vars; all calls wrapped in a broad try/except so any failure —
+  configuration, network, or API-level — is logged and swallowed rather than propagated to the HTTP
+  layer (see `app/rag_integration.py`).
 - **No authentication/authorization** anywhere in this API — matches the MVP's explicit no-security-concerns
   scope (single local user, no network exposure by default).
 - **Binding**: local dev server bound to `127.0.0.1` only, not `0.0.0.0` — this is a "locally-runnable app"
@@ -260,7 +258,8 @@ React SPA (Analyze Video page)  ──REST──▶  FastAPI (POST /video-analys
     to/from the match-scoring views since it doesn't touch match data
 - **State management**: local component state / React Context is sufficient — no Redux/global store needed
   at this scope.
-- **Networking**: `fetch` against the backend's own REST API only; the frontend never calls OpenRAG or
-  holds an `OPENRAG_API_KEY` directly, keeping the (currently nonexistent, future) key server-side.
+- **Networking**: `fetch` against the backend's own REST API only; the frontend never calls Astra DB or
+  holds an `ASTRA_DB_APPLICATION_TOKEN` directly, keeping the (currently nonexistent, future) token
+  server-side.
 - **Build/run**: `npm run dev` local dev server only — no production build pipeline, CDN, or hosting
   concerns in scope.

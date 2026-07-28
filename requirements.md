@@ -236,5 +236,5 @@ the match.
 > point/shot detection" exclusion above: the AI's output is a separate, clearly-labeled estimate
 > shown on its own page, never fed into the scoring engine, match history, or any match's saved
 > statistics as ground truth. REQ-029's indexing is likewise separate from match/point storage — it
-> only adds a document to the knowledge index used for reference, the same OpenRAG index that
+> only adds a document to the knowledge index used for reference, the same Astra DB index that
 > completed matches are already (best-effort) added to.

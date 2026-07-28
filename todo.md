@@ -1,12 +1,12 @@
 # Implementation TODO
 
 Derived from `requirements.md`, `design.md`, and `openapi.yaml`. Each task is implemented, then tested,
-then checked off below only once its tests pass. Credentials/config (`OPENRAG_URL`, `OPENRAG_API_KEY`,
-`DATABASE_PATH`) are read from `backend/.env` (never hardcoded).
+then checked off below only once its tests pass. Credentials/config (`ASTRA_DB_API_ENDPOINT`,
+`ASTRA_DB_APPLICATION_TOKEN`, `DATABASE_PATH`) are read from `backend/.env` (never hardcoded).
 
 ## Backend (Python + FastAPI + SQLite)
 
-- [x] T01 — Scaffold backend project: package layout, dependencies, `.env`/`.env.example`, config loading — `pytest tests/test_database.py::test_settings_load_from_env test_settings_openrag_disabled_without_api_key` pass
+- [x] T01 — Scaffold backend project: package layout, dependencies, `.env`/`.env.example`, config loading — `pytest tests/test_database.py::test_settings_load_from_env test_settings_astra_db_disabled_without_config` pass
 - [x] T02 — SQLite schema & connection layer (`players`, `matches`, `games`, `points`, FK enforcement) — `pytest tests/test_database.py` 6/6 pass (round-trip, FK pragma, unique constraint, cascade delete)
 - [x] T03 — Scoring engine (pure functions): deuce-aware game win, match win, serve rotation — `pytest tests/test_scoring.py` 20/20 pass
 - [x] T04 — `POST /matches` — match setup (REQ-001, REQ-002, REQ-003, REQ-004) — covered by `tests/test_api.py` (5 tests)
@@ -17,7 +17,7 @@ then checked off below only once its tests pass. Credentials/config (`OPENRAG_UR
 - [x] T09 — `GET /matches` + `DELETE /matches/{id}` — history (REQ-020, REQ-022) — covered by `tests/test_api.py` (3 tests)
 
 `pytest` full suite: 58/58 passing (`tests/test_database.py`, `tests/test_scoring.py`, `tests/test_api.py`).
-- [x] T10 — OpenRAG ingestion wiring on match completion — best-effort, `.env`-configured (REQ-019 side effect) — `pytest tests/test_openrag_integration.py` 6/6 pass (skip w/o key, success, swallowed failure, full API flow both ways)
+- [x] T10 — Astra DB ingestion wiring on match completion — best-effort, `.env`-configured (REQ-019 side effect) — `pytest tests/test_rag_integration.py` 6/6 pass (skip w/o config, success, swallowed failure, full API flow both ways). Originally targeted a self-hosted OpenRAG instance (`openrag-sdk`); swapped to Astra DB's hosted Data API (`astrapy`) at the project owner's request after `/openrag_install` proved impossible in this sandbox (Docker image pulls and `docs.openr.ag` both blocked by egress policy).
 - [x] T11 — Cross-check FastAPI's generated OpenAPI paths/operationIds against the committed `openapi.yaml` — found & fixed 2 real gaps: path param was `match_id` vs spec's `matchId`, and default-generated `operationId`s didn't match; `pytest tests/test_openapi_contract.py` 4/4 pass
 
 **Backend `pytest` full suite: 68/68 passing.**
@@ -46,13 +46,26 @@ then checked off below only once its tests pass. Credentials/config (`OPENRAG_UR
   successful-analysis and not-a-table-tennis-video cases.
 - [x] T20 — RAG indexing of video analysis summaries (REQ-029) — on a successful
   (`video_analyzable: true`) analysis, `app/main.py` calls the new
-  `ingest_video_analysis_best_effort()` in `app/openrag_integration.py`, reusing the same
-  best-effort OpenRAG ingestion pattern as match completion. Skipped when the video wasn't
-  analyzable, or when `OPENRAG_API_KEY` is unset; ingestion failures are logged and swallowed,
-  never surfacing to the caller — `pytest tests/test_openrag_integration.py
-  tests/test_video_analysis.py` 6 new tests pass (text-building, skip-without-key, success,
+  `ingest_video_analysis_best_effort()` in `app/rag_integration.py`, reusing the same
+  best-effort Astra DB ingestion pattern as match completion. Skipped when the video wasn't
+  analyzable, or when Astra DB isn't configured; ingestion failures are logged and swallowed,
+  never surfacing to the caller — `pytest tests/test_rag_integration.py
+  tests/test_video_analysis.py` 6 new tests pass (text-building, skip-without-config, success,
   swallowed-failure, and the full HTTP API flow both ingesting on success and skipping on
   not-analyzable).
+- [x] T21 — Swap the RAG backend from OpenRAG to Astra DB. A real local OpenRAG install
+  (`/openrag_install`) was attempted first, but this sandbox's egress policy blocks Docker Hub/GHCR
+  image pulls and `docs.openr.ag` itself, so no OpenRAG instance could be stood up here. The project
+  owner supplied real Astra DB credentials (endpoint + application token, now in `backend/.env`,
+  gitignored) and asked to use Astra DB instead. `app/openrag_integration.py` → `app/rag_integration.py`
+  (using `astrapy`'s `DataAPIClient`/`AsyncCollection.insert_one`, API surface confirmed via
+  `inspect.signature` introspection, not guessed), `Settings.openrag_url/openrag_api_key` →
+  `astra_db_api_endpoint/astra_db_application_token`, all specs and tests updated accordingly —
+  `pytest` full suite 81/81 passing with a fake `DataAPIClient` (mirrors the existing fake-client
+  test pattern used for OpenRAG and Gemini). **Not verified against the real Astra DB instance**: this
+  sandbox's egress policy also blocks `apps.astra.datastax.com` (confirmed directly against the
+  supplied endpoint), so a live insert could not be exercised here — needs verification on a machine
+  with normal internet access.
 
 **Backend `pytest` full suite: 81/81 passing.**
 

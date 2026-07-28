@@ -8,6 +8,7 @@ from app.main import app
 def client(tmp_path, monkeypatch):
     db_path = str(tmp_path / "test.db")
     monkeypatch.setenv("DATABASE_PATH", db_path)
-    monkeypatch.setenv("OPENRAG_API_KEY", "")
+    monkeypatch.setenv("ASTRA_DB_API_ENDPOINT", "")
+    monkeypatch.setenv("ASTRA_DB_APPLICATION_TOKEN", "")
     with TestClient(app) as c:
         yield c

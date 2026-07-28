@@ -4,19 +4,20 @@ from app.database import connection_scope, init_db
 
 def test_settings_load_from_env(monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", "/tmp/whatever.db")
-    monkeypatch.setenv("OPENRAG_URL", "http://example.test")
-    monkeypatch.setenv("OPENRAG_API_KEY", "secret")
+    monkeypatch.setenv("ASTRA_DB_API_ENDPOINT", "https://example.apps.astra.datastax.com")
+    monkeypatch.setenv("ASTRA_DB_APPLICATION_TOKEN", "secret")
     settings = get_settings()
     assert settings.database_path == "/tmp/whatever.db"
-    assert settings.openrag_url == "http://example.test"
-    assert settings.openrag_api_key == "secret"
-    assert settings.openrag_enabled is True
+    assert settings.astra_db_api_endpoint == "https://example.apps.astra.datastax.com"
+    assert settings.astra_db_application_token == "secret"
+    assert settings.astra_db_enabled is True
 
 
-def test_settings_openrag_disabled_without_api_key(monkeypatch):
-    monkeypatch.delenv("OPENRAG_API_KEY", raising=False)
+def test_settings_astra_db_disabled_without_config(monkeypatch):
+    monkeypatch.delenv("ASTRA_DB_API_ENDPOINT", raising=False)
+    monkeypatch.delenv("ASTRA_DB_APPLICATION_TOKEN", raising=False)
     settings = get_settings()
-    assert settings.openrag_enabled is False
+    assert settings.astra_db_enabled is False
 
 
 def test_schema_creates_tables_and_round_trips(tmp_path):

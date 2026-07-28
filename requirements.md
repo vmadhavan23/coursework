@@ -54,6 +54,17 @@ the match.
 2. Alternatively, the user resets the current match to 0–0 with the same two players and format, discarding
    points scored so far.
 
+### Flow 6 — AI Video Match Report (Post-MVP addendum)
+1. The user opens the Analyze Video page and pastes a URL to a match video (YouTube supported).
+2. The user submits the URL; the app sends it to an AI model for a best-effort read of the match.
+3. The app displays the AI's report: a summary, players identified, an estimated score (if a
+   scoreboard was visible), notable moments, a confidence level, and caveats about what could not
+   be determined reliably.
+4. If the video is not a table tennis match, or could not be analyzed, the app says so plainly
+   instead of fabricating statistics.
+5. This report is independent of the app's own scored matches — it does not appear in match
+   history and does not affect any match's saved statistics.
+
 ## Functional Requirements
 
 ### Match Setup
@@ -180,12 +191,39 @@ the match.
   - **Acceptance Criteria**: After reset, all previously recorded points for that match are cleared, the
     score returns to 0–0, and the same player names and format remain selected.
 
+### AI Video Analysis (Post-MVP addendum)
+
+- **REQ-025**: The user must be able to submit a video URL (YouTube supported) and receive an
+  AI-generated best-effort estimate of that match's statistics.
+  - **Acceptance Criteria**: Submitting a valid `http(s)` video URL returns a summary, an estimated
+    final score when determinable, notable moments, a confidence level, and caveats explaining what
+    could not be determined reliably.
+- **REQ-026**: The app must clearly indicate when a video cannot be meaningfully analyzed as a table
+  tennis match, rather than fabricating statistics for it.
+  - **Acceptance Criteria**: For a video that is not a table tennis match, or that could not be
+    watched/analyzed, the response marks it as not analyzable with an explanatory summary, no
+    estimated score, and no fabricated player stats.
+- **REQ-027**: Video analysis must be fully independent of the app's own scored matches — it must not
+  read, write, or otherwise affect match/point data, match history, or the scoring engine.
+  - **Acceptance Criteria**: Analyzing any number of videos never creates, modifies, or deletes any
+    row in match/game/point storage, and never appears in match history.
+- **REQ-028**: Video analysis must fail safely and clearly when its AI provider is not configured,
+  rather than crashing or silently doing nothing.
+  - **Acceptance Criteria**: With no provider credential configured, submitting a video URL returns a
+    clear "not configured" error instead of a server error or a fabricated response.
+
 ## Out of Scope for MVP
 
 - User accounts, login, or any authentication/authorization.
 - Cloud sync, multi-device access, or network-based multiplayer scoring.
-- Video, camera, or sensor-based automatic point/shot detection.
+- Video, camera, or sensor-based automatic point/shot detection **as a scoring input** — see note below.
 - Shot-by-shot spatial analytics (ball placement, spin, speed).
 - Tournament brackets, league standings, or multi-match scheduling.
 - Data export/import, backups, or sharing to external services.
 - Any hardening for concurrent users, large data volumes, or production-level reliability.
+
+> **Note on REQ-025–028**: these were added post-MVP, at the project owner's explicit request, as a
+> standalone AI-generated video *report* feature. This does not contradict the "no automatic
+> point/shot detection" exclusion above: the AI's output is a separate, clearly-labeled estimate
+> shown on its own page, never fed into the scoring engine, match history, or any match's saved
+> statistics as ground truth.

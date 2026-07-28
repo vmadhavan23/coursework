@@ -252,6 +252,46 @@ paths:
         '500':
           $ref: '#/components/responses/ServerError'
 
+  /video-analysis:
+    post:
+      operationId: analyzeMatchVideo
+      summary: Best-effort AI estimate of match stats from a video URL
+      description: >
+        Added after the initial MVP as a post-MVP addendum (REQ-025–028 in
+        requirements.md). Sends the video URL (YouTube supported) to Gemini
+        and returns its best-effort estimate of match statistics. This is a
+        standalone estimate only — it never reads or writes match/point
+        data, and is never treated as ground truth by the scoring engine or
+        summary endpoints.
+      x-req-ids: [REQ-025, REQ-026, REQ-027, REQ-028]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoAnalysisRequest'
+      responses:
+        '200':
+          description: AI-estimated match statistics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoAnalysisResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '502':
+          description: Gemini could not process the video (unreachable, invalid URL, quota, etc.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Video analysis is disabled because GEMINI_API_KEY is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
 components:
   parameters:
     MatchId:
@@ -535,3 +575,59 @@ components:
         - totals
         - closest_game
         - largest_margin_game
+
+    VideoAnalysisRequest:
+      type: object
+      properties:
+        video_url:
+          type: string
+          minLength: 1
+          description: An http(s) video URL, including YouTube links.
+      required: [video_url]
+
+    VideoAnalysisPlayer:
+      type: object
+      properties:
+        identifier:
+          type: string
+          description: How the player is identified (visible name, or a visual description).
+        estimated_points_won:
+          type: integer
+          nullable: true
+        notes:
+          type: string
+      required: [identifier, notes]
+
+    VideoAnalysisResponse:
+      type: object
+      properties:
+        video_analyzable:
+          type: boolean
+          description: False if the video could not be meaningfully analyzed as a table tennis match.
+        summary:
+          type: string
+        players:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoAnalysisPlayer'
+        estimated_final_score:
+          type: string
+          nullable: true
+        notable_moments:
+          type: array
+          items:
+            type: string
+        confidence:
+          type: string
+          enum: [low, medium, high]
+        caveats:
+          type: string
+          description: What could not be determined reliably, and why.
+      required:
+        - video_analyzable
+        - summary
+        - players
+        - estimated_final_score
+        - notable_moments
+        - confidence
+        - caveats

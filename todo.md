@@ -31,7 +31,26 @@ then checked off below only once its tests pass. Credentials/config (`OPENRAG_UR
 - [x] T16 — History view (Flow 4: list + delete) — implemented (`src/pages/History.jsx`), verified in T17
 - [x] T17 — End-to-end smoke test of a full match through the running app (backend + frontend together) — real `uvicorn` + `vite` dev servers, driven with Playwright/Chromium through all 5 user flows (new match, live scoring incl. serve rotation/tag/undo, match completion, summary, history reopen + delete, abandon, reset); all assertions passed, servers stopped cleanly after
 
+## Post-MVP addition: AI video analysis (outside requirements.md scope)
+
+- [x] T18 — `POST /video-analysis` (REQ-025, REQ-026, REQ-027, REQ-028) — send a match video URL
+  (YouTube supported) to Gemini for a standalone, best-effort estimate of match stats. Does not
+  touch match/point data or the scoring engine. Config via `backend/.env` (`GEMINI_API_KEY`,
+  disabled/503 if unset) —
+  `pytest tests/test_video_analysis.py` 7/7 pass (disabled-without-key, success, wrapped failure,
+  and the same 4 cases through the real HTTP API). Verified live against the real Gemini API:
+  correctly flagged a non-table-tennis video as not analyzable, and correctly read player names
+  and a 6-game score line off a real match broadcast's scoreboard overlay.
+- [x] T19 — Frontend "Analyze Video" page (`src/pages/VideoAnalysis.jsx`) — verified end-to-end
+  with Playwright against the real running backend + frontend + live Gemini API, both the
+  successful-analysis and not-a-table-tennis-video cases.
+
+**Backend `pytest` full suite: 75/75 passing.**
+
 ## Notes
 - Backend tests: `pytest` (unit tests for the scoring/stats engines, API tests via FastAPI's `TestClient`).
 - Frontend: manual/browser smoke testing via the pre-installed Chromium, since this MVP has no frontend
   test framework configured (kept out of scope to match "no production-level" tooling).
+- The video-analysis feature uses Google Gemini (`google-genai`), not the Claude API — an explicit,
+  deliberate choice by the project owner, since this sandbox has no Anthropic API credentials and
+  Gemini's API can accept a YouTube URL directly without downloading the video first.

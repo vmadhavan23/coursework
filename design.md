@@ -181,6 +181,38 @@ OpenAPI spec):
 | REQ-022 | `DELETE /matches/{id}` | Removes a match from history. |
 | REQ-023 | `POST /matches/{id}/abandon` | Discards an in-progress match entirely. |
 | REQ-024 | `POST /matches/{id}/reset` | Restarts the same match at 0–0. |
+| REQ-025 | `POST /video-analysis` | Returns the AI's summary, estimated score, notable moments, confidence, caveats. |
+| REQ-026 | `POST /video-analysis` | `video_analyzable: false` path — no fabricated score/players. |
+| REQ-027 | `POST /video-analysis` | Handler never opens a database connection — see AI Video Analysis section. |
+| REQ-028 | `POST /video-analysis` | Returns `503 video_analysis_disabled` when `GEMINI_API_KEY` is unset. |
+
+## AI Video Analysis (Post-MVP addendum)
+
+Added after the initial MVP at the project owner's request (REQ-025–028). Architecturally separate
+from everything else in this document — no schema changes, no new tables, no interaction with the
+scoring engine:
+
+```
+React SPA (Analyze Video page)  ──REST──▶  FastAPI (POST /video-analysis)  ──▶  Gemini API
+```
+
+- **Provider**: Google Gemini (`google-genai`, model `gemini-flash-latest`), not the Claude/Anthropic
+  API used elsewhere in this codebase (`openrag_sdk`). This was an explicit, informed choice by the
+  project owner — this deployment environment had no Anthropic API credentials available, and
+  Gemini's API can take a video URL (including YouTube) directly, with Gemini's own servers fetching
+  it — no local download or frame extraction needed on this app's side.
+- **Statelessness**: `app/video_analysis.py`'s `analyze_match_video()` takes a URL, calls Gemini, and
+  returns its structured JSON response. It never opens a database connection — this is what makes
+  REQ-027 true by construction rather than by convention.
+- **Structured output**: the Gemini call uses a JSON response schema (`RESPONSE_SCHEMA` in
+  `video_analysis.py`) mirroring `VideoAnalysisResponse` in `openapi.yaml`, so the model's output is
+  always parseable JSON matching the API contract — no prompt-output parsing/regex needed.
+- **Configuration**: `GEMINI_API_KEY` in `backend/.env` (see `.env.example`); unset disables the
+  feature with a `503`, matching REQ-028. No key is ever sent to or stored in the frontend.
+- **Prompting for honesty over confidence**: the prompt explicitly instructs the model to say when a
+  scoreboard isn't visible or the video isn't table tennis, rather than guessing a specific score —
+  this is what REQ-026 depends on, and was verified against a real non-table-tennis video during
+  testing (see `todo.md` T18).
 
 ## Technical Requirements — Backend
 
@@ -203,6 +235,8 @@ OpenAPI spec):
   scope (single local user, no network exposure by default).
 - **Binding**: local dev server bound to `127.0.0.1` only, not `0.0.0.0` — this is a "locally-runnable app"
   default, not a hardening measure.
+- **`google-genai` client**: one `genai.Client` per request in `POST /video-analysis`, configured from
+  `GEMINI_API_KEY`; used only by `app/video_analysis.py`, with no other module depending on it.
 
 ## Technical Requirements — Frontend
 
@@ -214,6 +248,8 @@ OpenAPI spec):
     `POST /matches/{id}/abandon`, `POST /matches/{id}/reset`
   - *Match Summary* (Flow 3 completion, and reused for Flow 4 detail view) → `GET /matches/{id}/summary`
   - *History List* (Flow 4) → `GET /matches`, `DELETE /matches/{id}`
+  - *Analyze Video* (Flow 6, post-MVP) → `POST /video-analysis`; standalone page, no navigation
+    to/from the match-scoring views since it doesn't touch match data
 - **State management**: local component state / React Context is sufficient — no Redux/global store needed
   at this scope.
 - **Networking**: `fetch` against the backend's own REST API only; the frontend never calls OpenRAG or

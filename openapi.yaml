@@ -1,0 +1,537 @@
+openapi: 3.1.0
+info:
+  title: Table Tennis Match Stats API
+  version: "0.1.0"
+  description: >
+    Backend REST API for a locally-runnable table tennis match stats MVP.
+    Every operation below carries an `x-req-ids` extension listing the
+    requirement IDs from requirements.md it implements; see design.md for the
+    full traceability table and rationale. No authentication is in scope —
+    this API is intended to run locally, unauthenticated, for a single user.
+servers:
+  - url: http://127.0.0.1:8000
+    description: Local development server
+
+paths:
+  /matches:
+    post:
+      operationId: createMatch
+      summary: Start a new match
+      x-req-ids: [REQ-001, REQ-002, REQ-003, REQ-004]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMatchRequest'
+      responses:
+        '201':
+          description: Match created, scoring can begin at Game 1, 0-0.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '422':
+          description: >
+            Invalid or incomplete setup (missing/duplicate player name,
+            unsupported points_to_win or best_of value).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    get:
+      operationId: listMatches
+      summary: List saved matches, most recent first
+      x-req-ids: [REQ-020]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: >
+            Completed and abandoned-but-not-deleted matches in
+            reverse-chronological order. In-progress matches are not
+            included; fetch them directly by ID.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matches:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MatchListItem'
+                required: [matches]
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /matches/{matchId}:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    get:
+      operationId: getMatch
+      summary: Get current state of a match (in-progress or completed)
+      x-req-ids: [REQ-006, REQ-012]
+      responses:
+        '200':
+          description: Current match state, including running score and serve indicator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    delete:
+      operationId: deleteMatch
+      summary: Delete a saved match from history
+      x-req-ids: [REQ-022]
+      responses:
+        '204':
+          description: Match deleted; it no longer appears in history or summaries.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /matches/{matchId}/points:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    post:
+      operationId: recordPoint
+      summary: Record the winner of the current point
+      description: >
+        Applies deuce-aware game-win detection, advances to the next game
+        automatically when a game is won, detects match completion, updates
+        the serve indicator, and — on match completion — persists the match
+        to history and (best-effort, non-blocking) ingests a summary
+        document into OpenRAG.
+      x-req-ids: [REQ-005, REQ-007, REQ-008, REQ-009, REQ-011, REQ-012, REQ-019]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PointRequest'
+      responses:
+        '200':
+          description: Point recorded; returns the updated match state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The match is not in progress (already completed or abandoned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /matches/{matchId}/points/last:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    delete:
+      operationId: undoLastPoint
+      summary: Undo the most recently recorded point
+      description: >
+        Reverts the score, serve indicator, and tag of the single most
+        recent point. If that point had completed a game (or the match),
+        the game/match is reopened as part of the same operation.
+      x-req-ids: [REQ-010]
+      responses:
+        '200':
+          description: Point undone; returns the updated match state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: There is no point to undo (match just started, or already abandoned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /matches/{matchId}/summary:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    get:
+      operationId: getMatchSummary
+      summary: Get generated statistics for a match
+      description: >
+        Most meaningful once the match has completed, but callable at any
+        time to see stats-so-far for an in-progress match.
+      x-req-ids: [REQ-013, REQ-014, REQ-015, REQ-016, REQ-017, REQ-018, REQ-021]
+      responses:
+        '200':
+          description: Generated match statistics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /matches/{matchId}/abandon:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    post:
+      operationId: abandonMatch
+      summary: Abandon an in-progress match without saving it
+      description: >
+        Deletes the match and all its recorded points; it will not appear
+        anywhere in match history.
+      x-req-ids: [REQ-023]
+      responses:
+        '204':
+          description: Match abandoned and removed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The match is already completed and cannot be abandoned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /matches/{matchId}/reset:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    post:
+      operationId: resetMatch
+      summary: Reset an in-progress match back to 0-0
+      description: >
+        Clears all recorded points and games for this match while keeping
+        the same players, points_to_win, and best_of.
+      x-req-ids: [REQ-024]
+      responses:
+        '200':
+          description: Match reset; returns the fresh 0-0 match state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The match is already completed and cannot be reset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  parameters:
+    MatchId:
+      name: matchId
+      in: path
+      required: true
+      schema:
+        type: integer
+
+  responses:
+    NotFound:
+      description: No match exists with the given ID.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ValidationError:
+      description: Request body failed schema/business validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServerError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code, e.g. "match_not_found".
+            message:
+              type: string
+              description: Human-readable explanation.
+          required: [code, message]
+      required: [error]
+
+    Player:
+      type: object
+      properties:
+        id:
+          type: integer
+        display_name:
+          type: string
+      required: [id, display_name]
+
+    Score:
+      type: object
+      properties:
+        player_one:
+          type: integer
+          minimum: 0
+        player_two:
+          type: integer
+          minimum: 0
+      required: [player_one, player_two]
+
+    PlayerSlot:
+      type: string
+      enum: [player_one, player_two]
+      description: Identifies which side of the match a value refers to.
+
+    Tag:
+      type: string
+      enum: [ace, unforced_error, winner]
+
+    CreateMatchRequest:
+      type: object
+      properties:
+        player_one_name:
+          type: string
+          minLength: 1
+        player_two_name:
+          type: string
+          minLength: 1
+        points_to_win:
+          type: integer
+          enum: [11, 21]
+        best_of:
+          type: integer
+          enum: [1, 3, 5]
+      required: [player_one_name, player_two_name, points_to_win, best_of]
+
+    PointRequest:
+      type: object
+      properties:
+        winner:
+          $ref: '#/components/schemas/PlayerSlot'
+        tag:
+          allOf:
+            - $ref: '#/components/schemas/Tag'
+          nullable: true
+      required: [winner]
+
+    Match:
+      type: object
+      properties:
+        id:
+          type: integer
+        player_one:
+          $ref: '#/components/schemas/Player'
+        player_two:
+          $ref: '#/components/schemas/Player'
+        points_to_win:
+          type: integer
+        best_of:
+          type: integer
+        games_to_win:
+          type: integer
+        status:
+          type: string
+          enum: [in_progress, completed, abandoned]
+        current_game_number:
+          type: integer
+        current_score:
+          $ref: '#/components/schemas/Score'
+        games_won:
+          $ref: '#/components/schemas/Score'
+        serving_player:
+          allOf:
+            - $ref: '#/components/schemas/PlayerSlot'
+          nullable: true
+        winner:
+          allOf:
+            - $ref: '#/components/schemas/PlayerSlot'
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - id
+        - player_one
+        - player_two
+        - points_to_win
+        - best_of
+        - games_to_win
+        - status
+        - current_game_number
+        - current_score
+        - games_won
+        - serving_player
+        - winner
+        - created_at
+        - completed_at
+
+    MatchListItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        player_one:
+          $ref: '#/components/schemas/Player'
+        player_two:
+          $ref: '#/components/schemas/Player'
+        status:
+          type: string
+          enum: [in_progress, completed, abandoned]
+        games_won:
+          $ref: '#/components/schemas/Score'
+        winner:
+          allOf:
+            - $ref: '#/components/schemas/PlayerSlot'
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - id
+        - player_one
+        - player_two
+        - status
+        - games_won
+        - winner
+        - created_at
+        - completed_at
+
+    GameStat:
+      type: object
+      properties:
+        game_number:
+          type: integer
+        player_one_score:
+          type: integer
+        player_two_score:
+          type: integer
+        winner:
+          $ref: '#/components/schemas/PlayerSlot'
+        point_margin:
+          type: integer
+          description: Absolute difference between the two final scores of this game.
+      required: [game_number, player_one_score, player_two_score, winner, point_margin]
+
+    TagCounts:
+      type: object
+      properties:
+        ace:
+          type: integer
+        unforced_error:
+          type: integer
+        winner:
+          type: integer
+      required: [ace, unforced_error, winner]
+
+    PlayerStatTotals:
+      type: object
+      properties:
+        points_won:
+          type: integer
+        serve_points_won_percentage:
+          type: number
+          nullable: true
+          description: Null when serve data is incomplete for this match.
+        longest_streak:
+          type: integer
+        tag_counts:
+          $ref: '#/components/schemas/TagCounts'
+      required: [points_won, serve_points_won_percentage, longest_streak, tag_counts]
+
+    MatchSummary:
+      type: object
+      properties:
+        match_id:
+          type: integer
+        player_one:
+          $ref: '#/components/schemas/Player'
+        player_two:
+          $ref: '#/components/schemas/Player'
+        status:
+          type: string
+          enum: [in_progress, completed, abandoned]
+        winner:
+          allOf:
+            - $ref: '#/components/schemas/PlayerSlot'
+          nullable: true
+        games_won:
+          $ref: '#/components/schemas/Score'
+        games:
+          type: array
+          items:
+            $ref: '#/components/schemas/GameStat'
+        totals:
+          type: object
+          properties:
+            player_one:
+              $ref: '#/components/schemas/PlayerStatTotals'
+            player_two:
+              $ref: '#/components/schemas/PlayerStatTotals'
+          required: [player_one, player_two]
+        closest_game:
+          allOf:
+            - $ref: '#/components/schemas/GameStat'
+          nullable: true
+        largest_margin_game:
+          allOf:
+            - $ref: '#/components/schemas/GameStat'
+          nullable: true
+      required:
+        - match_id
+        - player_one
+        - player_two
+        - status
+        - winner
+        - games_won
+        - games
+        - totals
+        - closest_game
+        - largest_margin_game

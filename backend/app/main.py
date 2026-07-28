@@ -6,7 +6,11 @@ from app import repository, schemas, stats
 from app.config import get_settings
 from app.database import connection_scope, init_db
 from app.errors import ConflictError, NotFoundError
-from app.openrag_integration import ingest_match_summary_best_effort
+from app.openrag_integration import (
+    ingest_match_summary_best_effort,
+    ingest_video_analysis_best_effort,
+)
+from app.video_analysis import VideoAnalysisError, analyze_match_video
 
 app = FastAPI(title="Table Tennis Match Stats API", version="0.1.0")
 
@@ -112,3 +116,33 @@ async def reset_match(matchId: int):
     with _db() as conn:
         repository.reset_match(conn, matchId)
         return repository.serialize_match(conn, matchId)
+
+
+@app.post(
+    "/video-analysis",
+    response_model=schemas.VideoAnalysisResponse,
+    operation_id="analyzeMatchVideo",
+)
+async def analyze_video(payload: schemas.VideoAnalysisRequest):
+    """Standalone, best-effort AI estimate of match stats from a video URL.
+    Never touches match/point data or the scoring engine — see video_analysis.py."""
+    if not get_settings().gemini_enabled:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "code": "video_analysis_disabled",
+                    "message": "GEMINI_API_KEY is not configured on the backend",
+                }
+            },
+        )
+    try:
+        result = await analyze_match_video(payload.video_url)
+    except VideoAnalysisError as exc:
+        return JSONResponse(
+            status_code=502,
+            content={"error": {"code": "video_analysis_failed", "message": str(exc)}},
+        )
+    if result.get("video_analyzable"):
+        await ingest_video_analysis_best_effort(payload.video_url, result)
+    return result

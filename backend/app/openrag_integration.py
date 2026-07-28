@@ -5,6 +5,7 @@ use it, but ingestion failures â€” including a missing/invalid OPENRAG_API_KEY â
 must never surface as an API error or block match completion.
 """
 
+import hashlib
 import io
 import logging
 
@@ -75,3 +76,53 @@ async def ingest_match_summary_best_effort(match_id: int) -> None:
             )
     except OpenRAGError as exc:
         log.warning("OpenRAG ingestion failed for match %s: %s", match_id, exc)
+
+
+def build_video_analysis_text(video_url: str, analysis: dict) -> str:
+    lines = [
+        f"Video Match Analysis: {video_url}",
+        f"Summary: {analysis['summary']}",
+    ]
+    if analysis.get("estimated_final_score"):
+        lines.append(f"Estimated final score: {analysis['estimated_final_score']}")
+    lines.append("")
+    lines.append("Players:")
+    for p in analysis.get("players", []):
+        pts = p.get("estimated_points_won")
+        lines.append(
+            f"  {p['identifier']}: estimated points won="
+            f"{pts if pts is not None else 'unknown'}, notes={p['notes']}"
+        )
+    if analysis.get("notable_moments"):
+        lines.append("")
+        lines.append("Notable moments:")
+        for moment in analysis["notable_moments"]:
+            lines.append(f"  - {moment}")
+    lines.append("")
+    lines.append(f"Confidence: {analysis['confidence']}")
+    lines.append(f"Caveats: {analysis['caveats']}")
+    return "\n".join(lines)
+
+
+async def ingest_video_analysis_best_effort(video_url: str, analysis: dict) -> None:
+    settings = get_settings()
+    if not settings.openrag_enabled:
+        log.debug(
+            "OpenRAG ingestion skipped for video analysis of %s: no OPENRAG_API_KEY configured",
+            video_url,
+        )
+        return
+
+    summary_text = build_video_analysis_text(video_url, analysis)
+    url_hash = hashlib.sha256(video_url.encode("utf-8")).hexdigest()[:16]
+
+    try:
+        async with OpenRAGClient(
+            api_key=settings.openrag_api_key, base_url=settings.openrag_url
+        ) as client:
+            await client.documents.ingest(
+                file=io.BytesIO(summary_text.encode("utf-8")),
+                filename=f"video-analysis-{url_hash}.txt",
+            )
+    except OpenRAGError as exc:
+        log.warning("OpenRAG ingestion failed for video analysis of %s: %s", video_url, exc)

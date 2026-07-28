@@ -257,13 +257,15 @@ paths:
       operationId: analyzeMatchVideo
       summary: Best-effort AI estimate of match stats from a video URL
       description: >
-        Added after the initial MVP as a post-MVP addendum (REQ-025–028 in
+        Added after the initial MVP as a post-MVP addendum (REQ-025–029 in
         requirements.md). Sends the video URL (YouTube supported) to Gemini
         and returns its best-effort estimate of match statistics. This is a
         standalone estimate only — it never reads or writes match/point
         data, and is never treated as ground truth by the scoring engine or
-        summary endpoints.
-      x-req-ids: [REQ-025, REQ-026, REQ-027, REQ-028]
+        summary endpoints. When the video is analyzable, a summary of the
+        result is also added to the OpenRAG knowledge index, best-effort
+        (REQ-029) — this indexing side effect never affects the response.
+      x-req-ids: [REQ-025, REQ-026, REQ-027, REQ-028, REQ-029]
       requestBody:
         required: true
         content:

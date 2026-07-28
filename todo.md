@@ -44,8 +44,17 @@ then checked off below only once its tests pass. Credentials/config (`OPENRAG_UR
 - [x] T19 — Frontend "Analyze Video" page (`src/pages/VideoAnalysis.jsx`) — verified end-to-end
   with Playwright against the real running backend + frontend + live Gemini API, both the
   successful-analysis and not-a-table-tennis-video cases.
+- [x] T20 — RAG indexing of video analysis summaries (REQ-029) — on a successful
+  (`video_analyzable: true`) analysis, `app/main.py` calls the new
+  `ingest_video_analysis_best_effort()` in `app/openrag_integration.py`, reusing the same
+  best-effort OpenRAG ingestion pattern as match completion. Skipped when the video wasn't
+  analyzable, or when `OPENRAG_API_KEY` is unset; ingestion failures are logged and swallowed,
+  never surfacing to the caller — `pytest tests/test_openrag_integration.py
+  tests/test_video_analysis.py` 6 new tests pass (text-building, skip-without-key, success,
+  swallowed-failure, and the full HTTP API flow both ingesting on success and skipping on
+  not-analyzable).
 
-**Backend `pytest` full suite: 75/75 passing.**
+**Backend `pytest` full suite: 81/81 passing.**
 
 ## Notes
 - Backend tests: `pytest` (unit tests for the scoring/stats engines, API tests via FastAPI's `TestClient`).

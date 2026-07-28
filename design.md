@@ -185,6 +185,7 @@ OpenAPI spec):
 | REQ-026 | `POST /video-analysis` | `video_analyzable: false` path — no fabricated score/players. |
 | REQ-027 | `POST /video-analysis` | Handler never opens a database connection — see AI Video Analysis section. |
 | REQ-028 | `POST /video-analysis` | Returns `503 video_analysis_disabled` when `GEMINI_API_KEY` is unset. |
+| REQ-029 | `POST /video-analysis` (side effect) | Best-effort OpenRAG ingestion of the analysis summary, skipped when `video_analyzable` is false or `OPENRAG_API_KEY` is unset. |
 
 ## AI Video Analysis (Post-MVP addendum)
 
@@ -213,6 +214,13 @@ React SPA (Analyze Video page)  ──REST──▶  FastAPI (POST /video-analys
   scoreboard isn't visible or the video isn't table tennis, rather than guessing a specific score —
   this is what REQ-026 depends on, and was verified against a real non-table-tennis video during
   testing (see `todo.md` T18).
+- **RAG indexing (REQ-029)**: on a successful (`video_analyzable: true`) analysis, `app/main.py`
+  reuses the same best-effort OpenRAG ingestion pattern as match completion
+  (`app/openrag_integration.py`'s `ingest_video_analysis_best_effort`) to add a plain-text summary of
+  the report to the OpenRAG knowledge index, under a filename derived from a hash of the video URL.
+  This is additive only — it never reads from or writes to the SQLite match/point tables, so it does
+  not weaken REQ-027. Like match ingestion, failures (including no `OPENRAG_API_KEY` configured) are
+  logged and swallowed, never surfaced to the caller or reflected in the HTTP response.
 
 ## Technical Requirements — Backend
 

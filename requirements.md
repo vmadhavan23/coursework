@@ -64,6 +64,8 @@ the match.
    instead of fabricating statistics.
 5. This report is independent of the app's own scored matches — it does not appear in match
    history and does not affect any match's saved statistics.
+6. If the report was successfully generated, a summary of it is also added to the knowledge index
+   in the background, so it can be referenced later (e.g., alongside completed-match summaries).
 
 ## Functional Requirements
 
@@ -211,6 +213,13 @@ the match.
   rather than crashing or silently doing nothing.
   - **Acceptance Criteria**: With no provider credential configured, submitting a video URL returns a
     clear "not configured" error instead of a server error or a fabricated response.
+- **REQ-029**: When a submitted video is successfully analyzed, a summary of that analysis must be
+  added to the knowledge index (RAG) for future reference, on a best-effort basis.
+  - **Acceptance Criteria**: After a video is analyzed and found to be analyzable, a text summary of
+    the report (summary, players, estimated score, notable moments, confidence, caveats) is submitted
+    for indexing; indexing failures (including no indexing provider configured) never cause the video
+    analysis response to fail or be delayed beyond the indexing call itself. A video that could not be
+    analyzed does not add anything to the index.
 
 ## Out of Scope for MVP
 
@@ -222,8 +231,10 @@ the match.
 - Data export/import, backups, or sharing to external services.
 - Any hardening for concurrent users, large data volumes, or production-level reliability.
 
-> **Note on REQ-025–028**: these were added post-MVP, at the project owner's explicit request, as a
+> **Note on REQ-025–029**: these were added post-MVP, at the project owner's explicit request, as a
 > standalone AI-generated video *report* feature. This does not contradict the "no automatic
 > point/shot detection" exclusion above: the AI's output is a separate, clearly-labeled estimate
 > shown on its own page, never fed into the scoring engine, match history, or any match's saved
-> statistics as ground truth.
+> statistics as ground truth. REQ-029's indexing is likewise separate from match/point storage — it
+> only adds a document to the knowledge index used for reference, the same OpenRAG index that
+> completed matches are already (best-effort) added to.

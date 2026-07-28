@@ -6,7 +6,7 @@ from app import repository, schemas, stats
 from app.config import get_settings
 from app.database import connection_scope, init_db
 from app.errors import ConflictError, NotFoundError
-from app.openrag_integration import (
+from app.rag_integration import (
     ingest_match_summary_best_effort,
     ingest_video_analysis_best_effort,
 )

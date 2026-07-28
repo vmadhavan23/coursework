@@ -3,7 +3,12 @@ from openrag_sdk import OpenRAGError
 
 from app import repository
 from app.database import connection_scope, init_db
-from app.openrag_integration import build_summary_text, ingest_match_summary_best_effort
+from app.openrag_integration import (
+    build_summary_text,
+    build_video_analysis_text,
+    ingest_match_summary_best_effort,
+    ingest_video_analysis_best_effort,
+)
 
 
 class FakeDocumentsClient:
@@ -164,6 +169,79 @@ def test_full_api_flow_triggers_ingestion_on_match_completion(client, monkeypatc
     assert instance is not None
     assert len(instance.documents.calls) == 1
     assert instance.documents.calls[0]["filename"] == f"match-{match_id}.txt"
+
+
+def _sample_video_analysis():
+    return {
+        "video_analyzable": True,
+        "summary": "A close singles match.",
+        "players": [
+            {"identifier": "Player in blue", "estimated_points_won": 11, "notes": "Strong serve"},
+            {"identifier": "Player in red", "estimated_points_won": 9, "notes": "Fought back"},
+        ],
+        "estimated_final_score": "11-9",
+        "notable_moments": ["Long rally at 9-9"],
+        "confidence": "medium",
+        "caveats": "Scoreboard partially obscured at times.",
+    }
+
+
+def test_build_video_analysis_text_contains_key_fields():
+    text = build_video_analysis_text("https://www.youtube.com/watch?v=abc123", _sample_video_analysis())
+    assert "https://www.youtube.com/watch?v=abc123" in text
+    assert "A close singles match." in text
+    assert "Estimated final score: 11-9" in text
+    assert "Player in blue: estimated points won=11, notes=Strong serve" in text
+    assert "Long rally at 9-9" in text
+    assert "Confidence: medium" in text
+    assert "Caveats: Scoreboard partially obscured at times." in text
+
+
+@pytest.mark.asyncio
+async def test_video_ingestion_skipped_without_api_key(monkeypatch):
+    monkeypatch.setenv("OPENRAG_API_KEY", "")
+    monkeypatch.setattr("app.openrag_integration.OpenRAGClient", FakeOpenRAGClient)
+    FakeOpenRAGClient.last_instance = None
+
+    await ingest_video_analysis_best_effort(
+        "https://www.youtube.com/watch?v=abc123", _sample_video_analysis()
+    )
+
+    assert FakeOpenRAGClient.last_instance is None
+
+
+@pytest.mark.asyncio
+async def test_video_ingestion_success_calls_documents_ingest(monkeypatch):
+    monkeypatch.setenv("OPENRAG_API_KEY", "test-key")
+    monkeypatch.setenv("OPENRAG_URL", "http://example.test")
+    monkeypatch.setattr("app.openrag_integration.OpenRAGClient", FakeOpenRAGClient)
+    FakeOpenRAGClient.last_instance = None
+
+    video_url = "https://www.youtube.com/watch?v=abc123"
+    await ingest_video_analysis_best_effort(video_url, _sample_video_analysis())
+
+    instance = FakeOpenRAGClient.last_instance
+    assert instance is not None
+    assert instance.api_key == "test-key"
+    assert len(instance.documents.calls) == 1
+    call = instance.documents.calls[0]
+    assert call["filename"].startswith("video-analysis-")
+    assert "A close singles match." in call["content"]
+
+
+@pytest.mark.asyncio
+async def test_video_ingestion_failure_is_swallowed(monkeypatch):
+    monkeypatch.setenv("OPENRAG_API_KEY", "test-key")
+
+    def failing_client(*args, **kwargs):
+        return FakeOpenRAGClient(*args, should_raise=True, **kwargs)
+
+    monkeypatch.setattr("app.openrag_integration.OpenRAGClient", failing_client)
+
+    # Must not raise, even though the fake client's ingest() raises OpenRAGError.
+    await ingest_video_analysis_best_effort(
+        "https://www.youtube.com/watch?v=abc123", _sample_video_analysis()
+    )
 
 
 def test_full_api_flow_match_completes_even_if_ingestion_fails(client, monkeypatch):
